@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>しんげき！ちび騎士団</title>
+<style>
+  :root{ --ink:#2a3550; --accent:#5b8cff; --bg:#eaf3ff; --panel:#fff; --bd:#c9d6ee; }
+  *{box-sizing:border-box;font-family:"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;min-height:100%;background:linear-gradient(#cfe6ff,#eaf3ff);color:var(--ink);touch-action:manipulation;}
+  #wrap{max-width:480px;margin:0 auto;padding:8px 10px 24px;display:flex;flex-direction:column;align-items:center;}
+  h1{font-size:19px;margin:6px 0 2px;font-weight:800;letter-spacing:.02em;}
+  h1 small{font-size:11px;opacity:.55;font-weight:600;}
+  #bar{width:100%;display:flex;gap:8px;align-items:center;justify-content:space-between;margin:6px 0;}
+  .pill{background:var(--panel);border:1px solid var(--bd);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:700;box-shadow:0 2px 6px rgba(40,60,100,.1);}
+  #turn.player{color:#2563c9;} #turn.enemy{color:#c0392b;}
+  canvas{background:#bfe09a;border:2px solid #7fae5a;border-radius:12px;box-shadow:0 6px 18px rgba(40,60,100,.18);touch-action:none;display:block;width:100%;height:auto;}
+  #msg{min-height:22px;margin:8px 0 4px;font-size:14px;font-weight:700;text-align:center;}
+  #msg.win{color:#1f9d4d;} #msg.lose{color:#c0392b;}
+  #btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;width:100%;margin-top:4px;}
+  button{border:1px solid var(--bd);background:var(--panel);border-radius:12px;padding:11px 16px;font-size:14px;font-weight:700;color:var(--ink);box-shadow:0 2px 6px rgba(40,60,100,.1);}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+  button:active{transform:translateY(1px);}
+  #help{font-size:12px;line-height:1.7;background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;margin-top:12px;width:100%;opacity:.95;}
+  #help b{color:var(--accent);}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>⚔️ しんげき！ちび騎士団 <small>v01</small></h1>
+  <div id="bar">
+    <span class="pill" id="turn">あなたのターン</span>
+    <span class="pill" id="cnt">味方 0 / 敵 0</span>
+  </div>
+  <canvas id="cv"></canvas>
+  <div id="msg">ユニットをタップ → 行き先をタップ</div>
+  <div id="btns">
+    <button class="primary" id="end">ターン終了 ▶</button>
+    <button id="restart">↺ 最初から</button>
+  </div>
+  <div id="help">
+    <b>目的</b>：王さま👑を動かして、右はしの<b>敵の城🏰</b>にたどり着けば勝ち！（敵を全滅でも勝ち）<br>
+    <b>動かし方</b>：自分のユニットをタップ→光ったマスをタップで移動。<br>
+    <b>戦い</b>：敵のいるマスをタップで攻撃。強さ＋運で勝てば敵を倒して前進、負けると自分が消える。<br>
+    1ターンに各ユニット1回ずつ動けます。動かし終えたら<b>「ターン終了」</b>で敵の番へ。<br>
+    ⚠ 王さま👑がやられたら負けです。守りながら進もう！
+  </div>
+</div>
+
+<script>
+(function(){
+const COLS = 8, ROWS = 7;
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let CELL = 48;
+
+function fitCanvas(){
+  const w = Math.min(window.innerWidth - 24, 460);
+  CELL = Math.floor(w / COLS);
+  cv.width = CELL * COLS;
+  cv.height = CELL * ROWS;
+}
+fitCanvas();
+
+const TYPE = {
+  king:   {emoji:'👑', str:6, name:'王さま'},
+  knight: {emoji:'🛡️', str:3, name:'騎士'},
+  archer: {emoji:'🏹', str:2, name:'弓兵'},
+  guard:  {emoji:'👹', str:3, name:'敵兵'},
+  oking:  {emoji:'😈', str:6, name:'敵将'},
+};
+
+let units, selected, turn, gameOver, castle;
+
+function startGame(){
+  units = [];
+  let id = 0;
+  const add = (side,type,col,row)=> units.push({id:id++, side, type, col, row, moved:false, alive:true});
+  // 味方（左）
+  add('player','king',   0, 3);
+  add('player','knight', 1, 2);
+  add('player','knight', 1, 4);
+  add('player','archer', 0, 1);
+  add('player','archer', 0, 5);
+  add('player','knight', 1, 3);
+  // 敵（右）
+  add('enemy','oking',  COLS-1, 3);
+  add('enemy','guard',  COLS-2, 1);
+  add('enemy','guard',  COLS-2, 3);
+  add('enemy','guard',  COLS-2, 5);
+  add('enemy','guard',  COLS-1, 2);
+  add('enemy','guard',  COLS-1, 4);
+  castle = {col: COLS-1, row: 3};   // 敵の城（敵将の初期位置）
+  selected = null;
+  turn = 'player';
+  gameOver = false;
+  setMsg('ユニットをタップ → 行き先をタップ');
+  draw(); updateHud();
+}
+
+function unitAt(col,row){ return units.find(u=>u.alive && u.col===col && u.row===row); }
+function alive(side){ return units.filter(u=>u.alive && u.side===side); }
+function king(side){ return units.find(u=>u.alive && u.side===side && (u.type==='king'||u.type==='oking')); }
+
+function setMsg(t, cls){ const m=document.getElementById('msg'); m.textContent=t; m.className=cls||''; }
+function updateHud(){
+  document.getElementById('cnt').textContent = '味方 '+alive('player').length+' / 敵 '+alive('enemy').length;
+  const tn=document.getElementById('turn');
+  tn.textContent = turn==='player' ? 'あなたのターン' : '敵のターン';
+  tn.className = turn;
+}
+
+// ----- 描画 -----
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // マス目
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    ctx.fillStyle = ((r+c)%2===0) ? '#c4e7a0' : '#bbe097';
+    ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
+  }
+  // 敵の城
+  drawEmoji('🏰', castle.col, castle.row, 0.9, 0.22);
+  // 移動可能マスのハイライト
+  if(selected){
+    moves(selected).forEach(m=>{
+      ctx.fillStyle = m.attack ? 'rgba(255,80,80,.38)' : 'rgba(91,140,255,.38)';
+      ctx.fillRect(m.col*CELL, m.row*CELL, CELL, CELL);
+    });
+    // 選択枠
+    ctx.strokeStyle='#2a5bd6'; ctx.lineWidth=3;
+    ctx.strokeRect(selected.col*CELL+2, selected.row*CELL+2, CELL-4, CELL-4);
+  }
+  // グリッド線
+  ctx.strokeStyle='rgba(110,140,80,.5)'; ctx.lineWidth=1;
+  for(let c=0;c<=COLS;c++){ ctx.beginPath(); ctx.moveTo(c*CELL,0); ctx.lineTo(c*CELL,cv.height); ctx.stroke(); }
+  for(let r=0;r<=ROWS;r++){ ctx.beginPath(); ctx.moveTo(0,r*CELL); ctx.lineTo(cv.width,r*CELL); ctx.stroke(); }
+  // ユニット
+  units.forEach(u=>{ if(!u.alive) return;
+    // 動ける味方は土台を明るく
+    if(turn==='player' && u.side==='player' && !u.moved){
+      ctx.fillStyle='rgba(255,255,255,.5)';
+      ctx.beginPath(); ctx.arc(u.col*CELL+CELL/2, u.row*CELL+CELL*0.6, CELL*0.36, 0, 7); ctx.fill();
+    }
+    // 陣営の下線
+    ctx.fillStyle = u.side==='player' ? '#3a7bff' : '#e0483a';
+    ctx.fillRect(u.col*CELL+CELL*0.2, u.row*CELL+CELL*0.84, CELL*0.6, CELL*0.07);
+    drawEmoji(TYPE[u.type].emoji, u.col, u.row, 0.66, 0.18);
+  });
+}
+function drawEmoji(e, col, row, size, yoff){
+  ctx.font = Math.floor(CELL*size)+'px serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(e, col*CELL+CELL/2, row*CELL+CELL*(0.5+ (yoff||0)) );
+}
+
+// ----- 移動候補 -----
+function moves(u){
+  const out=[]; const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  // 弓兵は2マス前進も可（前方向のみ、間が空いていれば）
+  dirs.forEach(([dx,dy])=>{
+    const c=u.col+dx, r=u.row+dy;
+    if(c<0||c>=COLS||r<0||r>=ROWS) return;
+    const occ=unitAt(c,r);
+    if(!occ) out.push({col:c,row:r,attack:false});
+    else if(occ.side!==u.side) out.push({col:c,row:r,attack:true,target:occ});
+  });
+  return out;
+}
+
+// ----- 戦闘 -----
+function battle(att, def){
+  const ra = TYPE[att.type].str + (Math.random()*4|0);
+  const rd = TYPE[def.type].str + (Math.random()*4|0);
+  if(ra >= rd){ def.alive=false; return true; }   // 攻撃側の勝ち
+  att.alive=false; return false;                  // 攻撃側の負け
+}
+
+// ----- 入力 -----
+function cellFromEvent(e){
+  const rect=cv.getBoundingClientRect();
+  const x=(e.clientX-rect.left)*(cv.width/rect.width);
+  const y=(e.clientY-rect.top)*(cv.height/rect.height);
+  return {col:Math.floor(x/CELL), row:Math.floor(y/CELL)};
+}
+cv.addEventListener('pointerdown', e=>{
+  if(gameOver || turn!=='player') return;
+  e.preventDefault();
+  const {col,row}=cellFromEvent(e);
+  if(col<0||col>=COLS||row<0||row>=ROWS) return;
+  const u=unitAt(col,row);
+
+  if(selected){
+    const opt = moves(selected).find(m=>m.col===col && m.row===row);
+    if(opt){
+      if(opt.attack){
+        const win = battle(selected, opt.target);
+        if(win){ selected.col=col; selected.row=row; setMsg('⚔️ 勝った！敵を倒した'); }
+        else { setMsg('💥 やられた…ユニットを失った', 'lose'); }
+        selected.moved=true; selected=null;
+        afterAction();
+        return;
+      } else {
+        selected.col=col; selected.row=row; selected.moved=true; selected=null;
+        setMsg('移動した'); afterAction(); return;
+      }
+    }
+    // 別の自軍ユニットを選び直し
+    if(u && u.side==='player' && !u.moved){ selected=u; setMsg(TYPE[u.type].name+'を選択'); draw(); return; }
+    selected=null; draw(); return;
+  }
+
+  if(u && u.side==='player'){
+    if(u.moved){ setMsg('そのユニットは今ターンもう動いた'); return; }
+    selected=u; setMsg(TYPE[u.type].name+'を選択 → 行き先をタップ'); draw();
+  }
+});
+
+function afterAction(){
+  draw(); updateHud();
+  if(checkEnd()) return;
+  // 全員動いたら自動で敵ターン
+  if(alive('player').every(u=>u.moved)) endTurn();
+}
+
+function checkEnd(){
+  const pk=king('player'), ek=king('enemy');
+  if(!pk){ gameOver=true; setMsg('👑王さまが倒れた… まけ', 'lose'); return true; }
+  if(pk.col===castle.col && pk.row===castle.row){ gameOver=true; setMsg('🏰 敵の城を制圧！ かち！', 'win'); return true; }
+  if(!ek && alive('enemy').length===0){ gameOver=true; setMsg('🎉 敵を全滅！ かち！', 'win'); return true; }
+  return false;
+}
+
+// ----- ターン管理 -----
+document.getElementById('end').addEventListener('click', ()=>{
+  if(gameOver || turn!=='player') return;
+  endTurn();
+});
+function endTurn(){
+  selected=null; turn='enemy'; updateHud(); setMsg('敵のターン…'); draw();
+  setTimeout(enemyTurn, 450);
+}
+function enemyTurn(){
+  const foes = alive('enemy');
+  let i=0;
+  const step=()=>{
+    if(gameOver) return;
+    if(i>=foes.length){
+      // 味方の moved をリセットして自分の番へ
+      units.forEach(u=>u.moved=false);
+      turn='player'; updateHud(); if(!checkEnd()) setMsg('あなたのターン'); draw(); return;
+    }
+    const u=foes[i++]; if(!u.alive){ step(); return; }
+    enemyAct(u);
+    draw(); updateHud();
+    if(checkEnd()) return;
+    setTimeout(step, 230);
+  };
+  step();
+}
+function enemyAct(u){
+  // 最も近い味方を狙う（王さま優先で少し重み）
+  const targets = alive('player');
+  if(!targets.length) return;
+  let best=null, bd=1e9;
+  targets.forEach(t=>{
+    const w = (t.type==='king') ? 1.5 : 1;
+    const d = (Math.abs(t.col-u.col)+Math.abs(t.row-u.row)) / w;
+    if(d<bd){ bd=d; best=t; }
+  });
+  // 隣接なら攻撃
+  const adj = moves(u);
+  const atk = adj.find(m=>m.attack);
+  if(atk){ const win=battle(u, atk.target); if(win){ u.col=atk.col; u.row=atk.row; } return; }
+  // 近づく方向へ1歩
+  const cand = adj.filter(m=>!m.attack);
+  if(!cand.length) return;
+  cand.sort((a,b)=>(Math.abs(a.col-best.col)+Math.abs(a.row-best.row)) - (Math.abs(b.col-best.col)+Math.abs(b.row-best.row)));
+  const mv=cand[0]; u.col=mv.col; u.row=mv.row;
+}
+
+document.getElementById('restart').addEventListener('click', startGame);
+window.addEventListener('resize', ()=>{ fitCanvas(); draw(); });
+
+startGame();
+})();
+</script>
+</body>
+</html>
